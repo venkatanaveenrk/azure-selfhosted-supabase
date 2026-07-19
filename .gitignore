@@ -1,0 +1,49 @@
+# ================================================================
+# self-hosted-supabase — .gitignore
+# ================================================================
+
+# ─── Rendered files (contain secrets) ───
+# deploy-stack.sh renders this from the .template; never commit it
+bootstrap/02-service-passwords.sql
+
+# Generated .env (contains all secrets)
+compose/.env
+compose/.env.local
+
+# Bootstrap symlink created by deploy-stack.sh on the VM
+compose/bootstrap
+
+# ─── Terraform ───
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+*.auto.tfvars
+# Keep example files committed
+!terraform.tfvars.*.example
+!*.tfvars.example
+crash.log
+crash.*.log
+tfplan
+*.tfplan
+
+# ─── Local artifacts ───
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Backup outputs (should never end up in git) ───
+*.sql.gz
+*.dump
+backups/
+
+# ─── Editor / IDE ───
+.vscode/
+.idea/
+*.iml
+
+# ─── Logs ───
+*.log

@@ -1,0 +1,81 @@
+# ================================================================
+# terraform.tfvars.example
+# ================================================================
+# Example tfvars for deploying self-hosted-supabase for a client.
+# Copy this file to `terraform.tfvars` and edit values for that client.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#   # edit terraform.tfvars below
+#   terraform plan
+#
+# See DEPLOY.md in the repo root for the full deployment procedure.
+#
+# Onboarding a new client — names like adidas-supabase-vm, adidas-supabase-rg,
+# a non-overlapping VNet CIDR (e.g. 10.51.0.0/16 for the next client, 10.52.0.0/16
+# for the one after that, etc).
+#
+# Every client instance MUST have:
+#   • Its own resource group
+#   • Its own Key Vault (with the four bootstrap secrets pre-populated)
+#   • A non-overlapping VNet CIDR
+#   • A unique Terraform state-file key
+# ================================================================
+
+# ─── Client / project identity ───
+# ⚠️ "Adidas" below is a SAMPLE VALUE — replace it with your actual
+# client/company name before running `terraform apply`.
+# Free text — drives tags + Studio branding only. Doesn't need to
+# match any Azure resource name.
+customer_name = "Adidas"
+
+# ─── Where things go ───
+# Naming pattern that scales cleanly across clients: <customer>-supabase-*
+# ⚠️ Replace "adidas" in the names below with your actual client's name too.
+resource_group   = "adidas-supabase-rg"
+key_vault_name   = "adidas-supabase-kv"
+region           = "eastus"
+
+# ─── Resource names ───
+vnet_name = "adidas-supabase-vnet"
+vm_name   = "adidas-supabase-vm"
+
+# ─── Linux admin username ───
+# MUST NOT be in Azure's reserved list (admin, root, user, test, etc.)
+# Variable validation will reject reserved names.
+admin_username = "opsuser" #change as per your standard
+
+# ─── Network — must not overlap any other VNet you might peer with ───
+vnet_address_space     = "10.50.0.0/16"
+subnet_gateway_cidr    = "10.50.0.0/27"
+subnet_supabase_cidr   = "10.50.10.0/24"
+subnet_appservice_cidr = "10.50.32.0/22"
+
+# ─── Data disk ───
+# 128 GB is the production default. Adjust down only if you're
+# confident this client's data volume will stay genuinely small.
+data_disk_size_gb = 128
+
+# ─── Optional features (off by default) ───
+# Turn these on only if specifically needed; defaults below match the
+# values in variables.tf for explicitness.
+enable_vpn_gateway = false   # VPN Gateway (~$365/mo when on)
+enable_monitoring  = false   # Log Analytics + alerts (~$5/mo when on)
+
+# ─── Per-developer SSH keys (optional) ───
+# Add SSH public keys here if you want direct SSH into the VM.
+# Otherwise leave empty — `az vm run-command` via Azure CLI is enough
+# for routine admin.
+developer_ssh_public_keys = {
+  # "yourname" = "ssh-ed25519 AAAAC3... yourname@laptop"
+}
+
+# ─── Tags ───
+# Note: customer_name (set above) is added to every resource's tags
+# automatically — no need to repeat it here.
+tags = {
+  managed_by = "terraform"
+  component  = "supabase"
+  env        = "prod"
+  # Recommendation: set owner so cost reports point to a person
+  # owner    = "yourname"
+}

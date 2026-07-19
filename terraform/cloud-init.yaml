@@ -1,0 +1,156 @@
+#cloud-config
+# ================================================================
+# cloud-init — Supabase VM first-boot setup (Ubuntu 24.04)
+# ================================================================
+# Does on first boot:
+#   1. Installs Docker Engine + Compose plugin + az CLI + tools
+#   2. Formats (if needed) + mounts the data disk at /mnt/supabase-data
+#   3. Creates directory layout under /mnt/supabase-data, including
+#      /mnt/supabase-data/docker — used as Docker's data-root so named
+#      volumes (postgres_data, storage_data) persist on the managed disk.
+#   4. Installs systemd unit to start docker compose on every boot
+#   5. Configures log rotation so containers can't fill the disk
+#   6. Hardens sshd (password auth off; key-only)
+# ================================================================
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - jq
+  - postgresql-client
+  - unzip
+  - python3-yaml
+
+write_files:
+  # ── Data disk preparation script (re-runnable; safe) ──
+  - path: /opt/setup-data-disk.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      MOUNT_POINT="/mnt/supabase-data"
+      DISK_PATH="/dev/disk/azure/scsi1/lun0"
+
+      echo "[setup-data-disk] waiting for data disk..."
+      for i in $(seq 1 30); do [ -e "$DISK_PATH" ] && break; sleep 2; done
+      [ -e "$DISK_PATH" ] || { echo "[setup-data-disk] data disk not found"; exit 1; }
+
+      REAL_DEV="$(readlink -f "$DISK_PATH")"
+      if ! blkid "$REAL_DEV" >/dev/null 2>&1; then
+        echo "[setup-data-disk] formatting ext4 (no existing FS)"
+        mkfs.ext4 -F "$REAL_DEV"
+      else
+        echo "[setup-data-disk] existing filesystem found — NOT formatting"
+      fi
+
+      mkdir -p "$MOUNT_POINT"
+      DISK_UUID="$(blkid -s UUID -o value "$REAL_DEV")"
+      grep -q "$DISK_UUID" /etc/fstab || \
+        echo "UUID=$DISK_UUID $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+      mount -a
+
+      # Directories used by the stack
+      mkdir -p "$MOUNT_POINT/docker"        # Docker data-root (named volumes live here)
+      mkdir -p "$MOUNT_POINT/backups"       # pg_dump output target
+
+      # Permissions: docker daemon writes as root; backups need the admin user
+      chmod 0711 "$MOUNT_POINT/docker"
+
+      echo "[setup-data-disk] OK"
+
+  # ── Docker daemon config: data-root on the persistent disk + log rotation ──
+  # data-root: ensures Docker's named volumes (postgres_data, storage_data) live
+  # on /mnt/supabase-data/docker — i.e. on the managed disk we never destroy.
+  # log-driver: caps each container's log at 10MB x 3 files so a runaway log
+  # cannot fill the disk.
+  - path: /etc/docker/daemon.json
+    permissions: '0644'
+    content: |
+      {
+        "data-root": "/mnt/supabase-data/docker",
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "10m",
+          "max-file": "3"
+        }
+      }
+
+  # ── systemd unit: bring Supabase compose stack up on every boot ──
+  # WorkingDirectory points at compose/ so `docker compose` finds the file.
+  - path: /etc/systemd/system/supabase.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Supabase Self-Hosted Stack (Docker Compose)
+      Requires=docker.service
+      After=docker.service network-online.target mnt-supabase\x2ddata.mount
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/supabase/compose
+      # 'up -d' is idempotent — safe even if stack is already running
+      ExecStart=/usr/bin/docker compose up -d
+      ExecStop=/usr/bin/docker compose down
+      TimeoutStartSec=600
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ── Harden sshd: key-only, no passwords, no root login ──
+  - path: /etc/ssh/sshd_config.d/99-hardening.conf
+    permissions: '0644'
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin no
+      ChallengeResponseAuthentication no
+      KbdInteractiveAuthentication no
+
+runcmd:
+  # ── Prepare + mount the data disk FIRST (before Docker starts) ──
+  # Docker daemon will refuse to start if its data-root doesn't exist,
+  # so the mount must be in place before installing/starting Docker.
+  - /opt/setup-data-disk.sh
+
+  # ── Install Docker Engine + Compose plugin ──
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - bash -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list'
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # ── Install Azure CLI (for managed-identity Key Vault access) ──
+  - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
+  # ── Start Docker (will use the daemon.json we wrote above) ──
+  - systemctl enable --now docker
+
+  # ── Stack directory layout ──
+  # /opt/supabase/
+  #     compose/      docker-compose.yml + .env + kong.yml
+  #     bootstrap/    SQL scripts
+  #     scripts/      operational scripts
+  - mkdir -p /opt/supabase/compose /opt/supabase/bootstrap /opt/supabase/scripts
+  - chown -R ${admin_username}:${admin_username} /opt/supabase
+
+  # ── Apply ssh hardening + reload sshd ──
+  - systemctl reload ssh || systemctl restart ssh
+
+  # ── Ensure time is synced (matters for JWT validation) ──
+  - timedatectl set-ntp true
+
+  # ── Enable the supabase systemd unit (won't START until compose files exist) ──
+  - systemctl daemon-reload
+  - systemctl enable supabase.service
+
+  # ── Marker ──
+  - bash -c 'echo "cloud-init finished at $(date -u)" > /opt/cloud-init-complete'
+
+final_message: "Supabase VM base setup complete after $UPTIME seconds. SSH in and run deploy-stack.sh."

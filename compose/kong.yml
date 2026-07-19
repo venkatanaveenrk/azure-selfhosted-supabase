@@ -1,0 +1,182 @@
+_format_version: "2.1"
+_transform: true
+
+# ================================================================
+# Kong Gateway — Declarative Routing for Supabase (v3)
+# ================================================================
+# Kong is the single entry point. It routes incoming requests by URL
+# path to the correct internal service:
+#
+#   /rest/v1/*      -> PostgREST   (database REST API)
+#   /auth/v1/*      -> GoTrue      (authentication)
+#   /realtime/v1/*  -> Realtime    (websockets)
+#   /storage/v1/*   -> Storage API (files)
+#   /pg/*           -> postgres-meta
+#   /              -> Studio       (dashboard, basic-auth)
+#
+# Apps talk ONLY to Kong (http://<vm-ip>:8000). They never address
+# the individual services. This is what makes 9 containers look like
+# one Supabase.
+# ================================================================
+
+# ─── API consumers ───
+# anon          — public, key-auth, ACL group "anon"
+# service_role  — backend, key-auth, ACL group "admin" (bypasses RLS)
+# dashboard     — Studio user, basic-auth (username/password)
+consumers:
+  - username: anon
+    keyauth_credentials:
+      - key: $SUPABASE_ANON_KEY
+  - username: service_role
+    keyauth_credentials:
+      - key: $SUPABASE_SERVICE_KEY
+  # The dashboard consumer MUST be declared here. basicauth_credentials
+  # below references it; without this entry Kong refuses to start.
+  - username: dashboard
+
+# ─── ACL groups ───
+acls:
+  - consumer: anon
+    group: anon
+  - consumer: service_role
+    group: admin
+
+# ─── Basic-auth for the Studio dashboard ───
+basicauth_credentials:
+  - consumer: dashboard
+    username: $DASHBOARD_USERNAME
+    password: $DASHBOARD_PASSWORD
+
+services:
+  # ──────────────────────────────────────────────
+  # PostgREST — REST API
+  # ──────────────────────────────────────────────
+  - name: rest-v1
+    url: http://rest:3000/
+    routes:
+      - name: rest-v1-route
+        strip_path: true
+        paths:
+          - /rest/v1/
+    plugins:
+      - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  # ──────────────────────────────────────────────
+  # GraphQL (pg_graphql via PostgREST)
+  # ──────────────────────────────────────────────
+  - name: graphql-v1
+    url: http://rest:3000/rpc/graphql
+    routes:
+      - name: graphql-v1-route
+        strip_path: true
+        paths:
+          - /graphql/v1
+    plugins:
+      - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: true
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - Content-Profile:graphql_public
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  # ──────────────────────────────────────────────
+  # GoTrue — Auth
+  # ──────────────────────────────────────────────
+  - name: auth-v1
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-route
+        strip_path: true
+        paths:
+          - /auth/v1/
+    plugins:
+      - name: cors
+
+  # ──────────────────────────────────────────────
+  # Realtime — websockets
+  # ──────────────────────────────────────────────
+  - name: realtime-v1
+    url: http://realtime:4000/socket/
+    routes:
+      - name: realtime-v1-route
+        strip_path: true
+        paths:
+          - /realtime/v1/
+    plugins:
+      - name: cors
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  # ──────────────────────────────────────────────
+  # Storage API — files
+  # ──────────────────────────────────────────────
+  - name: storage-v1
+    url: http://storage:5000/
+    routes:
+      - name: storage-v1-route
+        strip_path: true
+        paths:
+          - /storage/v1/
+    plugins:
+      - name: cors
+
+  # ──────────────────────────────────────────────
+  # postgres-meta — DB metadata (admin only)
+  # ──────────────────────────────────────────────
+  - name: meta
+    url: http://meta:8080/
+    routes:
+      - name: meta-route
+        strip_path: true
+        paths:
+          - /pg/
+    plugins:
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+
+  # ──────────────────────────────────────────────
+  # Studio dashboard — protected by basic-auth
+  # ──────────────────────────────────────────────
+  - name: studio
+    url: http://studio:3000/
+    routes:
+      - name: studio-route
+        strip_path: true
+        paths:
+          - /
+    plugins:
+      - name: cors
+      - name: basic-auth
+        config:
+          hide_credentials: true

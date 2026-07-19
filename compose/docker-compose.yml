@@ -1,0 +1,316 @@
+# ================================================================
+# Supabase Self-Hosted Stack — Docker Compose (v3)
+# ================================================================
+# Image versions are the Supabase 2026-04-27 stable release set —
+# these versions are tested together. To upgrade, change tags as a
+# SET (see README "Upgrading Supabase").
+#
+# Data persistence:
+#   - Postgres data  -> Docker named volume 'postgres_data'
+#   - Storage files  -> Docker named volume 'storage_data'
+#
+# Both named volumes are physically located under Docker's data-root,
+# which cloud-init configures to /mnt/supabase-data/docker — i.e. on the
+# Azure managed data disk (prevent_destroy in Terraform). Named volumes
+# keep the in-container UIDs/permissions correct without us having to
+# match them on the host.
+# ================================================================
+
+name: supabase
+
+services:
+  # ──────────────────────────────────────────────
+  # PostgreSQL — the database
+  # ──────────────────────────────────────────────
+  db:
+    container_name: supabase-db
+    image: supabase/postgres:15.8.1.085
+    restart: unless-stopped
+    healthcheck:
+      # Use the runtime env-vars (escape $ so compose passes them through
+      # to the container). The default 'pg_isready' inside this image
+      # connects on a unix socket using these vars; this matches.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      # listen_addresses=* is REQUIRED so the docker bridge network can
+      # reach postgres. Default is 'localhost' which only binds to the
+      # container's loopback — other services can't connect.
+      - -c
+      - listen_addresses=*
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      # Named volume — physical path is under Docker's data-root,
+      # which lives on /mnt/supabase-data/docker.
+      - postgres_data:/var/lib/postgresql/data
+      # Bootstrap SQL — runs ONCE on first init (empty data dir only).
+      # This dir is a symlink set up by deploy-stack.sh.
+      - ./bootstrap:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Exposed only on the VM's loopback for psql/admin from the VM.
+      - "127.0.0.1:5432:5432"
+
+  # ──────────────────────────────────────────────
+  # PostgREST — auto REST API from the database
+  # ──────────────────────────────────────────────
+  rest:
+    container_name: supabase-rest
+    image: postgrest/postgrest:v12.2.3
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PASSWORD}@db:5432/${POSTGRES_DB}
+      PGRST_DB_SCHEMAS: public,storage,graphql_public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY}
+
+  # ──────────────────────────────────────────────
+  # Auth (GoTrue) — authentication & user management
+  # ──────────────────────────────────────────────
+  auth:
+    container_name: supabase-auth
+    image: supabase/gotrue:v2.158.1
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${AUTH_ADMIN_PASSWORD}@db:5432/${POSTGRES_DB}
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_URI_ALLOW_LIST: "*"
+      GOTRUE_DISABLE_SIGNUP: ${GOTRUE_DISABLE_SIGNUP}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY}
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${GOTRUE_EXTERNAL_EMAIL_ENABLED}
+      GOTRUE_MAILER_AUTOCONFIRM: ${GOTRUE_MAILER_AUTOCONFIRM}
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_SMS_AUTOCONFIRM: "true"
+
+  # ──────────────────────────────────────────────
+  # Realtime — websocket subscriptions to DB changes
+  # ──────────────────────────────────────────────
+  realtime:
+    container_name: supabase-realtime
+    image: supabase/realtime:v2.30.34
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # TCP-listen check on the API port. The original /api/tenants/.../health
+      # endpoint requires an auth header and a configured tenant — both fail
+      # at startup, leading to a healthy-but-marked-unhealthy container.
+      # We just confirm the port is open.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/4000' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      PORT: 4000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: supabase_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_AFTER_CONNECT_QUERY: "SET search_path TO _realtime"
+      DB_ENC_KEY: supabaserealtime
+      API_JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY_BASE: ${REALTIME_SECRET_KEY_BASE}
+      ERL_AFLAGS: "-proto_dist inet_tcp"
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: "10000"
+      APP_NAME: realtime
+      SEED_SELF_HOST: "true"
+      RUN_JANITOR: "true"
+
+  # ──────────────────────────────────────────────
+  # Storage API — file storage (file backend on data disk)
+  # ──────────────────────────────────────────────
+  storage:
+    container_name: supabase-storage
+    image: supabase/storage-api:v1.11.13
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      rest:
+        condition: service_started
+      imgproxy:
+        condition: service_started
+    healthcheck:
+      # /status returns 200 but requires the storage server to have finished
+      # migrations. Net effect is the same — TCP check is simpler & reliable.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/5000' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      POSTGREST_URL: http://rest:3000
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://supabase_storage_admin:${STORAGE_ADMIN_PASSWORD}@db:5432/${POSTGRES_DB}
+      FILE_SIZE_LIMIT: ${FILE_SIZE_LIMIT}
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: stub
+      REGION: stub
+      GLOBAL_S3_BUCKET: stub
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: http://imgproxy:5001
+    volumes:
+      # Named volume — same persistence model as postgres_data.
+      - storage_data:/var/lib/storage
+
+  # ──────────────────────────────────────────────
+  # imgproxy — on-the-fly image transformations
+  # ──────────────────────────────────────────────
+  imgproxy:
+    container_name: supabase-imgproxy
+    image: darthsim/imgproxy:v3.8.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "imgproxy", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      IMGPROXY_BIND: ":5001"
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /
+      IMGPROXY_USE_ETAG: "true"
+      IMGPROXY_ENABLE_WEBP_DETECTION: "true"
+    volumes:
+      # Reads the same storage files to transform them. Shared with the
+      # storage service via the named volume.
+      - storage_data:/var/lib/storage
+
+  # ──────────────────────────────────────────────
+  # postgres-meta — DB metadata API (powers Studio)
+  # ──────────────────────────────────────────────
+  meta:
+    container_name: supabase-meta
+    image: supabase/postgres-meta:v0.84.2
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: ${POSTGRES_DB}
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+
+  # ──────────────────────────────────────────────
+  # Studio — the admin dashboard
+  # ──────────────────────────────────────────────
+  # IMAGE TAG NOTE: 20240826-b797f8e (the older "stable" tag commonly
+  # cited online) returns 404 on Docker Hub. The 2026.04.27-sha-...
+  # tag is a verified-pullable image from the supabase-stable release set.
+  studio:
+    container_name: supabase-studio
+    image: supabase/studio:2026.04.27-sha-5f60601
+    restart: unless-stopped
+    depends_on:
+      meta:
+        condition: service_started
+    healthcheck:
+      # The Studio's internal API requires an authenticated session;
+      # checking the root path is enough to know Next.js is serving.
+      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=3 http://localhost:3000/ >/dev/null 2>&1 || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    ports:
+      # Published on the VM's loopback ONLY (127.0.0.1). A SSH tunnel
+      # ('ssh -L 3000:localhost:3000 vm') from an admin is the supported
+      # way to reach Studio. Never publish on 0.0.0.0:3000 — Studio has
+      # only basic-auth, not enough for internet-facing.
+      - "127.0.0.1:3000:3000"
+    environment:
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: ${STUDIO_DEFAULT_ORGANIZATION}
+      DEFAULT_PROJECT_NAME: ${STUDIO_DEFAULT_PROJECT}
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: ${API_EXTERNAL_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+
+  # ──────────────────────────────────────────────
+  # Kong — the API gateway (single entry point)
+  # ──────────────────────────────────────────────
+  kong:
+    container_name: supabase-kong
+    image: kong:2.8.1
+    restart: unless-stopped
+    depends_on:
+      - rest
+      - auth
+      - realtime
+      - storage
+      - meta
+      - studio
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+    volumes:
+      - ./kong.yml:/home/kong/kong.yml:ro
+    ports:
+      # Kong is the ONLY broadly-exposed service. Bound to all interfaces
+      # so App Service (over the VNet) can reach it. The NSG enforces
+      # VNet-only access — internet inbound is denied.
+      - "8000:8000"
+
+# ──────────────────────────────────────────────
+# Named volumes
+# ──────────────────────────────────────────────
+# These are explicit so 'docker compose down -v' is the documented
+# destructive-only path. A plain 'docker compose down' preserves data.
+volumes:
+  postgres_data:
+    name: supabase_postgres_data
+  storage_data:
+    name: supabase_storage_data
