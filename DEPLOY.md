@@ -8,16 +8,16 @@ This is the canonical procedure for spinning up a production Supabase instance f
 
 ## 📋 Before You Start — Pick The Identity
 
-Decide these values up-front. **`Adidas` in the Example column is a sample placeholder — swap in your actual client/company name everywhere it appears before you deploy.**
+Decide these values up-front. **`contoso` in the Example column is a sample placeholder — swap in your actual client/company name everywhere it appears before you deploy.**
 
 | What | Example |
 |---|---|
-| **customer_name** | `Adidas` |
-| **Resource group** | `adidas-supabase-rg` |
-| **Key Vault** | `adidas-supabase-kv` |
-| **VM name** | `adidas-supabase-vm` |
+| **customer_name** | `contoso` |
+| **Resource group** | `contoso-supabase-rg` |
+| **Key Vault** | `contoso-supabase-kv` |
+| **VM name** | `contoso-supabase-vm` |
 | **VNet CIDR** | `10.50.0.0/16` |
-| **TF state key** | `adidas/supabase-vm/terraform.tfstate` |
+| **TF state key** | `contoso/supabase-vm/terraform.tfstate` |
 | **Admin username** | (your choice, not on Azure's reserved list) |
 
 `customer_name` is free text — it drives resource **tags** and Studio branding only, not Azure resource names (those must follow Azure's naming rules, so set them explicitly as shown above). This is what makes the template reusable: clone the repo, set these seven values for the client, deploy — no code changes needed per client.
@@ -249,7 +249,7 @@ Point it at the right Key Vault via `KEY_VAULT_NAME`, and set `CUSTOMER_NAME` to
 
 ```bash
 KV=supabase-kv               # whatever you used in Step 2
-CUSTOMER="Adidas"         # shown as the org name inside Studio
+CUSTOMER="contoso"         # shown as the org name inside Studio
 
 az vm run-command invoke \
   --resource-group "$RG" --name "$VM" \
@@ -396,7 +396,7 @@ az group delete --name "$RG" --yes --no-wait
 az storage blob delete \
   --account-name tfstateaccount \
   --container-name tfstate \
-  --name "adidas/supabase-vm/terraform.tfstate" \
+  --name "contoso/supabase-vm/terraform.tfstate" \
   --auth-mode login
 
 # Locally
