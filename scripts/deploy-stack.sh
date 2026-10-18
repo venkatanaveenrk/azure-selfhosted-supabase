@@ -29,7 +29,7 @@
 #   CUSTOMER_NAME    Shown as the Studio org name (default: "My Organization")
 #
 # Example:
-#   KEY_VAULT_NAME=adidas-supabase-kv CUSTOMER_NAME="Adidas" ./deploy-stack.sh
+#   KEY_VAULT_NAME=contoso-supabase-kv CUSTOMER_NAME="contoso" ./deploy-stack.sh
 # ================================================================
 set -euo pipefail
 
