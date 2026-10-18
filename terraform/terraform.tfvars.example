@@ -10,7 +10,7 @@
 #
 # See DEPLOY.md in the repo root for the full deployment procedure.
 #
-# Onboarding a new client — names like adidas-supabase-vm, adidas-supabase-rg,
+# Onboarding a new client — names like contoso-supabase-vm, contoso-supabase-rg,
 # a non-overlapping VNet CIDR (e.g. 10.51.0.0/16 for the next client, 10.52.0.0/16
 # for the one after that, etc).
 #
@@ -22,22 +22,22 @@
 # ================================================================
 
 # ─── Client / project identity ───
-# ⚠️ "Adidas" below is a SAMPLE VALUE — replace it with your actual
+# ⚠️ "contoso" below is a SAMPLE VALUE — replace it with your actual
 # client/company name before running `terraform apply`.
 # Free text — drives tags + Studio branding only. Doesn't need to
 # match any Azure resource name.
-customer_name = "Adidas"
+customer_name = "contoso"
 
 # ─── Where things go ───
 # Naming pattern that scales cleanly across clients: <customer>-supabase-*
-# ⚠️ Replace "adidas" in the names below with your actual client's name too.
-resource_group   = "adidas-supabase-rg"
-key_vault_name   = "adidas-supabase-kv"
+# ⚠️ Replace "contoso" in the names below with your actual client's name too.
+resource_group   = "contoso-supabase-rg"
+key_vault_name   = "contoso-supabase-kv"
 region           = "eastus"
 
 # ─── Resource names ───
-vnet_name = "adidas-supabase-vnet"
-vm_name   = "adidas-supabase-vm"
+vnet_name = "contoso-supabase-vnet"
+vm_name   = "contoso-supabase-vm"
 
 # ─── Linux admin username ───
 # MUST NOT be in Azure's reserved list (admin, root, user, test, etc.)
