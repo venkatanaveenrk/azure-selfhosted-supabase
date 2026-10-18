@@ -21,7 +21,7 @@
 #   ./generate-jwt-keys.sh <key-vault-name> [--force]
 #
 # Example:
-#   ./generate-jwt-keys.sh adidas-supabase-kv
+#   ./generate-jwt-keys.sh contoso-supabase-kv
 # ================================================================
 set -euo pipefail
 
@@ -30,7 +30,7 @@ FORCE="${2:-}"
 
 if [ -z "$KEY_VAULT" ]; then
   echo "Usage: $0 <key-vault-name> [--force]"
-  echo "Example: $0 adidas-supabase-kv"
+  echo "Example: $0 contoso-supabase-kv"
   exit 1
 fi
 
