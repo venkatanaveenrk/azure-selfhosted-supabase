@@ -5,7 +5,7 @@
 # handful of naming variables below per deployment. Nothing in this
 # module is hardcoded to a specific company or product.
 #
-# Defaults reflect the production-validated configuration:
+# Defaults reflect the recommended configuration:
 #   - VPN gateway OFF (App Service VNet integration is the access model)
 #   - App Service subnet /22 (Microsoft.Web delegation minimum)
 #   - Monitoring OFF (opt-in)
