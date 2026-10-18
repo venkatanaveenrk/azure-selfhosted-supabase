@@ -39,7 +39,7 @@ Nothing in this repo is hardcoded to a specific company or project. Clone it, se
    └──────────────────────────────────────────────────────────┘
 ```
 
-**Key properties (validated in production):**
+**Key design properties:**
 - VM has **no public IP** by default — VNet-only access
 - App Services reach Supabase **privately over the VNet** (App Service VNet integration)
 - All persistent data on a **separate managed disk** that survives any VM event
